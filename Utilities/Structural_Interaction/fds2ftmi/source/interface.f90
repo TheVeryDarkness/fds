@@ -4,14 +4,52 @@ PROGRAM interface
 
 IMPLICIT NONE
 
-CHARACTER(256) NODES,ELMS,INTFILE
-INTEGER NUMEL,NNODE,I,J,NO1,NO2,NO3,NO4,LINHAS,VARIABLE,CURVEID
-INTEGER SHELL,EL,LAYER,HIGHNODE,N_OR,ROUND,CODE,N_AVERAGE,T_AVERAGE
-REAL SOMAX,SOMAY,SOMAZ,A(3),B(3),C(3)
-REAL, ALLOCATABLE, DIMENSION(:,:) :: NOS,NOMASTER,N,BOUNDARY
-INTEGER, ALLOCATABLE, DIMENSION(:,:) :: ELEMENTOS
-REAL C_SIZE,TINT,TBEG,TEND,VEC_MULT,HC,EM
-CHARACTER(256) CHID,INPUT
+CHARACTER(256) NODES   ! Name of nodes data file
+CHARACTER(256) ELMS    ! Name of elements data file
+CHARACTER(256) INTFILE ! Name of output file(without extension name)
+
+INTEGER NNODE    ! Count of nodes
+INTEGER HIGHNODE ! Highest index of node
+INTEGER NUMEL    ! Count of elements
+INTEGER SHELL    ! Whether elements below are shell elements
+INTEGER LAYER    ! Which layer the heat flux is prescribed in
+INTEGER EL       ! The number of the interface element type in ANSYS
+INTEGER N_OR     ! Normal Orientation
+
+REAL HC ! Film coefficient
+
+CHARACTER(256) CHID ! CHID
+REAL C_SIZE         ! Cell size
+INTEGER VARIABLE    ! Number of variables
+REAL TINT,TBEG,TEND ! Time interval and boundary
+INTEGER CODE        ! Which FEM code will be used
+
+CHARACTER(256) INPUT !The first argument, name of fds chid or input file
+
+INTEGER CURVEID !
+REAL EM         !
+
+REAL, ALLOCATABLE, DIMENSION(:,:) :: NOS ! Nodes data: Node index, x, y, z
+
+INTEGER, ALLOCATABLE, DIMENSION(:,:) :: ELEMENTOS ! Elements data(To be figured out)
+
+REAL SOMAX,SOMAY,SOMAZ ! Sum of coordinates
+
+REAL, ALLOCATABLE, DIMENSION(:,:) :: NOMASTER ! Element information: Index, average (center) coordinates
+
+REAL A(3),B(3),C(3) ! Three points' coordinates
+
+REAL, ALLOCATABLE, DIMENSION(:,:) :: N ! Element index, Normal vector(its length is twice the area)
+
+INTEGER N_AVERAGE ! Number of average points
+INTEGER T_AVERAGE ! Time average
+
+INTEGER LINHAS ! Lines(rows) of the table
+
+INTEGER I,J,NO1,NO2,NO3,NO4
+INTEGER ROUND
+REAL, ALLOCATABLE, DIMENSION(:,:) :: BOUNDARY
+REAL VEC_MULT
 CHARACTER(8) INTFILE2,INTFILE3,FILE_END,ARG
 
 C_SIZE=0.0
@@ -20,6 +58,12 @@ TBEG=0.0
 TEND=0.0
 SHELL=0
 ROUND=1
+
+! Files
+! 1 - nodes.dat
+! 2 - elements.dat
+! 70 - Output file about the meshes
+! 71 - Outout file about the Loads
 
 ! Open node file        
 NODES='nodes'
@@ -164,33 +208,33 @@ CREATE_NOMASTER: DO I=1,NUMEL
    SOMAY=0.D0
    SOMAZ=0.D0
    DO J=1,NNODE
-      IF (NO1==NOS(J,1)) THEN
+      IF (NO1==NOS(J,1)) THEN ! NO1 matches any node's index
          SOMAX=SOMAX+NOS(J,2)
          SOMAY=SOMAY+NOS(J,3)
          SOMAZ=SOMAZ+NOS(J,4)
          A(1)=NOS(J,2)
          A(2)=NOS(J,3)
          A(3)=NOS(J,4)
-      ELSE IF (NO2==NOS(J,1)) THEN
+      ELSE IF (NO2==NOS(J,1)) THEN ! NO2 matches any node's index
          SOMAX=SOMAX+NOS(J,2)
          SOMAY=SOMAY+NOS(J,3)
          SOMAZ=SOMAZ+NOS(J,4)
          B(1)=NOS(J,2)
          B(2)=NOS(J,3)
          B(3)=NOS(J,4)
-      ELSE IF (NO3==NOS(J,1)) THEN
+      ELSE IF (NO3==NOS(J,1)) THEN ! NO3 matches any node's index
          SOMAX=SOMAX+NOS(J,2)
          SOMAY=SOMAY+NOS(J,3)
          SOMAZ=SOMAZ+NOS(J,4)
          C(1)=NOS(J,2)
          C(2)=NOS(J,3)
          C(3)=NOS(J,4)
-      ELSE IF (NO4/=NO3 .AND. NO4==NOS(J,1)) THEN
+      ELSE IF (NO4/=NO3 .AND. NO4==NOS(J,1)) THEN ! NO4 matches any node's index
          SOMAX=SOMAX+NOS(J,2)
          SOMAY=SOMAY+NOS(J,3)
          SOMAZ=SOMAZ+NOS(J,4)
       ENDIF
-   ENDDO
+   ENDDO ! Actually there's a possibility that NO(i) is not a defined node.
    IF (NO4==NO3) THEN
       NOMASTER(I,1)=HIGHNODE
       NOMASTER(I,2)=SOMAX/3
@@ -216,7 +260,11 @@ SELECT CASE (CODE)
 CASE (1) ! ANSYS
 IF (SHELL==1) THEN
    DO I=1,NUMEL
+      ! SQRT((N(I,2)**2)+(N(I,3)**2)+(N(I,4)**2)) is the length of N.
       VEC_MULT=(C_SIZE/2)/(SQRT((N(I,2)**2)+(N(I,3)**2)+(N(I,4)**2)))
+      ! So N * VEC_MULT has a length of C_SIZE/2,
+      ! the same direction with N,
+      ! which means NOMASTER is the center of the element.
       NOMASTER(I,2)=NOMASTER(I,2)+(N_OR*(N(I,2)*VEC_MULT))
       NOMASTER(I,3)=NOMASTER(I,3)+(N_OR*(N(I,3)*VEC_MULT))
       NOMASTER(I,4)=NOMASTER(I,4)+(N_OR*(N(I,4)*VEC_MULT))
@@ -296,14 +344,14 @@ WRITE(70,'(A)') "SECNUM,"
 WRITE(70,'(A)') "TSHAP,LINE"
 WRITE(70,'(A)') "!*"
 LOOP_SURF152:DO I=1,NUMEL
-   IF (ELEMENTOS(I,6)==0) THEN
+   IF (ELEMENTOS(I,6)==0) THEN ! Check whether the element has nodes 5, 6, 7, 8
       WRITE(70,'(A, I8)') "nsel,S,node,,", ELEMENTOS(I,2)
       WRITE(70,'(A, I8)') "nsel,A,node,,", ELEMENTOS(I,3)
       WRITE(70,'(A, I8)') "nsel,A,node,,", ELEMENTOS(I,4)
       WRITE(70,'(A, I8)') "nsel,A,node,,", ELEMENTOS(I,5)
       IF (VARIABLE==3) THEN
          WRITE(70,'(A)') "ESURF,0"
-         ELSE
+      ELSE
          WRITE(70,'(A, I8)') "ESURF,", INT(NOMASTER(I,1))
       ENDIF
       WRITE(70,'(A)') "!*"
@@ -332,6 +380,7 @@ WRITE(70,'(A)') "!*"
 PRINT *, 'LOOP_TABELAS'
 LOOP_TABELAS:DO I=1,NUMEL
    WRITE (INTFILE2,'(g8.0)') INT(NOMASTER(I,1))
+   CALL MAKE_STRIP(INTFILE2)
    PRINT *, INTFILE2
    IF (T_AVERAGE==0) THEN
       IF (N_AVERAGE==0) THEN
@@ -370,6 +419,7 @@ IF (VARIABLE==1 .OR. VARIABLE==2) THEN
    PRINT *, 'LOOP_CARGAS'
    LOOP_CARGAS:DO I=1,NUMEL
       WRITE (INTFILE2,'(g8.0)') INT(NOMASTER(I,1))
+      CALL MAKE_STRIP(INTFILE2)
       PRINT *, INTFILE2
       WRITE(71,'(A)') "!*"
       WRITE(71,'(A, A, A, A, A)') "D,",INTFILE2,", , %A", INTFILE2, "% , , , ,TEMP, , , , ,"
@@ -383,8 +433,10 @@ IF (VARIABLE==2) THEN
    PRINT *, 'LOOP_HEAT_TRANSFER'
    LOOP_HEAT2:DO I=1,NUMEL
       WRITE (INTFILE2,'(g8.0)') INT(NOMASTER(I,1))
+      CALL MAKE_STRIP(INTFILE2)
       PRINT *, INTFILE2
       WRITE (INTFILE3,'(g8.0)') INT(ELEMENTOS(I,1))
+      CALL MAKE_STRIP(INTFILE3)
       PRINT *, INTFILE3
       WRITE(71,'(A,A,A,A,A)') "SFE,",INTFILE3,",1,CONV,0,%H",INTFILE2,"%"
    ENDDO LOOP_HEAT2
@@ -394,8 +446,10 @@ IF (VARIABLE==1) THEN
    PRINT *, 'LOOP_HEAT_TRANSFER'
    LOOP_HEAT1:DO I=1,NUMEL
       WRITE (INTFILE2,'(g8.0)') INT(NOMASTER(I,1))
+      CALL MAKE_STRIP(INTFILE2)
       PRINT *, INTFILE2
       WRITE (INTFILE3,'(g8.0)') INT(ELEMENTOS(I,1))
+      CALL MAKE_STRIP(INTFILE3)
       PRINT *, INTFILE3
       WRITE(71,'(A,A,A,F7.3)') "SFE,",INTFILE3,",1,CONV,0,",HC
    ENDDO LOOP_HEAT1
@@ -407,8 +461,10 @@ IF (VARIABLE==3) THEN
    PRINT *, 'LOOP_HEAT_FLUX'
    LOOP_HEAT3:DO I=1,NUMEL
       WRITE (INTFILE2,'(g8.0)') INT(NOMASTER(I,1))
+      CALL MAKE_STRIP(INTFILE2)
       PRINT *, INTFILE2
       WRITE (INTFILE3,'(g8.0)') INT(ELEMENTOS(I,1))
+      CALL MAKE_STRIP(INTFILE3)
       PRINT *, INTFILE3
       WRITE(71,'(A,A,A,A,A)') "SFE,",INTFILE3,",1,HFLUX,0,%A",INTFILE2,"%"
    ENDDO LOOP_HEAT3
@@ -482,7 +538,7 @@ ENDDO LOOP_RAD
 READ(2,'(a)') FILE_END
 IF (FILE_END=='END') THEN
    WRITE(6,*) FILE_END
-ELSE
+ELSE ! Reset
    DEALLOCATE (NOMASTER)
    DEALLOCATE (N)
    DEALLOCATE (ELEMENTOS)
@@ -495,7 +551,7 @@ ELSE
    ALLOCATE (N(NUMEL,4))
    N=0.D0
    ROUND=2
-   GO TO 10 
+   GO TO 10 ! Read the next elements pack.
 ENDIF
 !*******************************
 ! SPACE LEFT TO OTHER CODES IMPLEMENTATION
