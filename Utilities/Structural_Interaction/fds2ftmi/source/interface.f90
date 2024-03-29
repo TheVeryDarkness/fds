@@ -62,6 +62,9 @@ PROGRAM interface
 ! Files
 ! 1 - nodes.dat
 ! 2 - elements.dat
+! 6 - Console
+! 11 - .smv
+! 12 - Boundary quantity file(.bf)
 ! 70 - Output file about the meshes
 ! 71 - Outout file about the Loads
 
@@ -422,7 +425,7 @@ PROGRAM interface
             CALL MAKE_STRIP(INTFILE2)
             PRINT *, INTFILE2
             WRITE (71, '(A)') "!*"
-            WRITE (71, '(A, A, A, A, A)') "D,", INTFILE2, ", , %A", INTFILE2, "% , , , ,TEMP, , , , ,"
+            WRITE (71, '(A, A, A, A, A)') "D,", INTFILE2, ", , %A", TRIM(INTFILE2), "% , , , ,TEMP, , , , ,"
          END DO LOOP_CARGAS
       END IF
 !*******************************
@@ -438,7 +441,7 @@ PROGRAM interface
             WRITE (INTFILE3, '(g8.0)') INT(ELEMENTOS(I, 1))
             CALL MAKE_STRIP(INTFILE3)
             PRINT *, INTFILE3
-            WRITE (71, '(A,A,A,A,A)') "SFE,", INTFILE3, ",1,CONV,0,%H", INTFILE2, "%"
+            WRITE (71, '(A,A,A,A,A)') "SFE,", INTFILE3, ",1,CONV,0,%H", TRIM(INTFILE2), "%"
          END DO LOOP_HEAT2
       END IF
       IF (VARIABLE == 1) THEN
@@ -466,7 +469,7 @@ PROGRAM interface
             WRITE (INTFILE3, '(g8.0)') INT(ELEMENTOS(I, 1))
             CALL MAKE_STRIP(INTFILE3)
             PRINT *, INTFILE3
-            WRITE (71, '(A,A,A,A,A)') "SFE,", INTFILE3, ",1,HFLUX,0,%A", INTFILE2, "%"
+            WRITE (71, '(A,A,A,A,A)') "SFE,", INTFILE3, ",1,HFLUX,0,%A", TRIM(INTFILE2), "%"
          END DO LOOP_HEAT3
       END IF
 !*******************************

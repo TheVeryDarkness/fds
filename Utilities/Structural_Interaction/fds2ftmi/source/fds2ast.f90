@@ -12,10 +12,12 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
    IMPLICIT NONE
 
    INTEGER, PARAMETER :: FB = SELECTED_REAL_KIND(6)
-   INTEGER :: IERR, NMESHES, NM, NOC, I, J, K, IOR_LOOP
-   INTEGER :: IDUM, IFILE, NSAM, NV, MV
+   INTEGER :: IERR, NMESHES, NM, NOC, I, J, K
+   INTEGER :: IDUM, IFILE, NSAM
+   INTEGER :: NV, MV ! Seem to be always 1
    INTEGER :: IOR_INPUT, NPATCH, IJBAR, JKBAR, II
-   REAL(FB) :: XS, XF, YS, YF, ZS, ZF, TIME
+   REAL(FB) :: XS, XF, YS, YF, ZS, ZF ! Cell border whose center is element centroid
+   REAL(FB) :: TIME
 
    TYPE MESH_TYPE
       REAL(FB), POINTER, DIMENSION(:) :: X, Y, Z
@@ -27,10 +29,11 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
    TYPE(MESH_TYPE), POINTER :: M
 
    INTEGER, ALLOCATABLE, DIMENSION(:) :: IOR ! Orientation
-   INTEGER, ALLOCATABLE, DIMENSION(:) :: I1B, I2B, J1B, J2B, K1B, K2B
+   INTEGER, ALLOCATABLE, DIMENSION(:) :: I1B, I2B, J1B, J2B, K1B, K2B ! Borders of patches
    REAL(FB), ALLOCATABLE, DIMENSION(:, :, :, :) :: Q
-   REAL(FB), ALLOCATABLE, DIMENSION(:, :, :) :: F
-   LOGICAL, ALLOCATABLE, DIMENSION(:, :, :) :: ALREADY_USED
+   REAL(FB), ALLOCATABLE, DIMENSION(:, :, :) :: F ! Boundary quantity
+   LOGICAL, ALLOCATABLE, DIMENSION(:, :, :) :: ALREADY_USED ! Whether data at a point is already used
+   INTEGER :: IOR_LOOP ! IOR converted to positive, which means 1, 2, 3, 5, 6, 7. Used as a loop index.
    CHARACTER(2) :: ANS
    CHARACTER(4) :: CHOICE
    CHARACTER(256) GRIDFILE, CHID, JUNK
@@ -46,16 +49,29 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
    INTEGER :: BATCHMODE
 
    INTEGER COUNTER ! Count of elements
-   INTEGER V, SIZE, VCOUNT(7), P, POND, VARIABLE, VARIAB, WARNING, IN, VAR, BEG_VAR
-   REAL Xa, Ya, Za, C_SIZE, TINT, A, B, C, C_S, NX, NY, NZ
+   INTEGER VAR     ! Index of the variable being processed
+   INTEGER IN, BEG_VAR
+   INTEGER V ! Count of frames calculated, TIME / TINT + 1
+   INTEGER SIZE ! Length of vector, or count of calculated frame. ((TEND - TBEG)/TINT) + 1
+   INTEGER P, POND, VARIABLE, VARIAB, WARNING
+   INTEGER VCOUNT(7) ! Count of patches that shares the same point. A variable within a loop.
+   REAL Xa, Ya, Za ! Coordinates of the element centroid
+   REAL NX, NY, NZ ! Normal vector of the element
+   REAL C_SIZE, TINT, B, C_S 
+   REAL A ! Dot product of M_AST(i, :) and Normal vector
+   REAL C ! Length of normal vector
    REAL TBEG, TEND, SUM
-   REAL NOMASTER(COUNTER, 4), N(COUNTER, 4)
-   REAL, ALLOCATABLE, DIMENSION(:, :) :: M_AST
-   REAL, ALLOCATABLE, DIMENSION(:) :: V_TIME, TAST, MED_TAST
+   REAL NOMASTER(COUNTER, 4) ! Element information: Index, average (center) coordinates
+   REAL N(COUNTER, 4) ! Surface index, normal vector
+   REAL, ALLOCATABLE, DIMENSION(:, :) :: M_AST ! M_AST(I, IOR) is the AST of surface that comes across current point and whose orientation is IOR
+   REAL, ALLOCATABLE, DIMENSION(:) :: V_TIME ! Time of every frames read
+   REAL, ALLOCATABLE, DIMENSION(:) :: TAST
    CHARACTER(8) OUTFILE
    CHARACTER(30) VARIABLE_KIND
-   REAL MED
-   INTEGER N_AVERAGE, T_AVERAGE, I_AVERAGE, COMEBACK, NUM_INT_CSIZE(7), H_NULL(3)
+   REAL, ALLOCATABLE, DIMENSION(:) :: MED_TAST ! Calculated average AST.
+   REAL MED ! Average. It's a variable within a loop.
+   INTEGER I_AVERAGE ! Frames count of average interval
+   INTEGER N_AVERAGE, T_AVERAGE, COMEBACK, NUM_INT_CSIZE(7), H_NULL(3)
    INTEGER N_DIR ! Count of normal components that is not 0
 
 ! Set a few default values
@@ -136,13 +152,16 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
       BACKSPACE (11)
       READ (11, *) JUNK, BNDF_MESH(I)
       READ (11, '(A)') BNDF_FILE(I)
+      CALL MAKE_STRIP(BNDF_FILE(I))
       READ (11, '(A)') BNDF_TEXT(I)
       READ (11, *)
       READ (11, '(A)') BNDF_UNIT(I)
-      OPEN (12, FILE=AdjustL(BNDF_FILE(I)), FORM='UNFORMATTED', STATUS='OLD', IOSTAT=RCODE)
-      WRITE (6, *) AdjustL(BNDF_FILE(I))
+      OPEN (12, FILE=BNDF_FILE(I), FORM='UNFORMATTED', STATUS='OLD', IOSTAT=RCODE)
       CLOSE (12)
-      IF (RCODE /= 0) CYCLE
+      IF (RCODE /= 0) THEN
+         PRINT *, "Unable to open ", TRIM(BNDF_FILE(I)), " but it's mentioned in .smv"
+         CYCLE
+      END IF
       NFILES_EXIST = NFILES_EXIST + 1
       IF (CHOICE == 'BNDC') BNDF_TYPE(I) = 'CENTERED'
       IF (CHOICE == 'BNDF') BNDF_TYPE(I) = 'STAGGERED'
@@ -157,7 +176,7 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
    BEG_VAR = 1
    IF (VARIAB == 3) THEN
       DO I = 1, 500
-         IF (TRIM(BNDF_TEXT(I)) == ' NET HEAT FLUX                ') THEN ! Serious?
+         IF (TRIM(BNDF_TEXT(I)) == ' NET HEAT FLUX                ') THEN ! Actually it should be TOTAL HEAT FLUX
             BEG_VAR = I
             VARIAB = I
             EXIT
@@ -205,9 +224,12 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
          ALLOCATE (V_TIME(SIZE))
          ALLOCATE (TAST(SIZE))
          ALLOCATE (M_AST(SIZE, 7))
-         ! Serious?
-         IF (TRIM(BNDF_TEXT(VAR)) == ' ADIABATIC SURFACE TEMPERATURE') VCOUNT = 0.0
-         IF (TRIM(BNDF_TEXT(VAR)) == ' NET HEAT FLUX                ') VCOUNT = 0.0
+         IF (TRIM(BNDF_TEXT(VAR)) == ' ADIABATIC SURFACE TEMPERATURE') THEN
+            VCOUNT = 0.0
+         END IF
+         IF (TRIM(BNDF_TEXT(VAR)) == ' NET HEAT FLUX                ') THEN
+            VCOUNT = 0.0
+         END IF
          !VCOUNT=0.0
          V_TIME = 0.0
          TAST = 0.0
@@ -227,9 +249,9 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
                NV = 1
                MV = 1
                IB(MV) = IN
-               QFILE = BNDF_FILE(IN)
-               OPEN (12 + VAR, FILE=AdjustL(QFILE), FORM='UNFORMATTED', STATUS='OLD', IOSTAT=RCODE)
-               WRITE (6, *) AdjustL(QFILE)
+               QFILE = AdjustL(BNDF_FILE(IN))
+               OPEN (12 + VAR, FILE=QFILE, FORM='UNFORMATTED', STATUS='OLD', IOSTAT=RCODE)
+               WRITE (6, *) QFILE
                IF (RCODE /= 0) THEN
                   CLOSE (12 + VAR)
                   CYCLE
@@ -254,16 +276,19 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
                ALLOCATE (K1B(1:NPATCH))
                ALLOCATE (K2B(1:NPATCH))
 !
+               ! Read patch mesh boundary below
                DO I = 1, NPATCH
                   READ (12 + VAR) I1B(I), I2B(I), J1B(I), J2B(I), K1B(I), K2B(I), IOR(I)
                END DO
+               ! Read patch mesh boundary above
 !
                IJBAR = MAX(M%IBAR, M%JBAR)
                JKBAR = MAX(M%JBAR, M%KBAR)
                ALLOCATE (F(0:IJBAR, 0:JKBAR, NPATCH))
+               ! Read boundary quantities below
                READ_BLOOP: DO
                   READ (12 + VAR, END=199) TIME
-                  DO II = 1, NPATCH ! Read mesh boundary
+                  DO II = 1, NPATCH
                      SELECT CASE (ABS(IOR(II)))
                      CASE (1)
                         IF (BNDF_TYPE_CHOSEN == 'STAGGERED') READ (12 + VAR, END=199) &
@@ -350,6 +375,7 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
                   END DO PATCHES
 !
                END DO READ_BLOOP
+               ! Read boundary quantities abpve
 !
 199            CLOSE (12 + VAR)
                DEALLOCATE (Q)
@@ -1437,7 +1463,9 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
 !
 !*** Set an time averaged function to represent the evaluation of the variables (T_AVERAGE)
 600      CONTINUE
-         IF (T_AVERAGE == 0) THEN
+
+! Output apdl commands.
+         IF (T_AVERAGE == 0) THEN ! No average on time
             DO I = 1, V
                IF (VARIABLE_KIND == ' ADIABATIC SURFACE TEMPERATURE') THEN
                   WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", I, ",0),", V_TIME(I)
@@ -1452,7 +1480,7 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
                   WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", I, ",1),", TAST(I)*1000
                END IF
             END DO
-         ELSE
+         ELSE ! Average on every time interval of T_AVERAGE
             I_AVERAGE = T_AVERAGE/TINT
             ALLOCATE (MED_TAST((V - 1)/I_AVERAGE))
             DO I = 1, (V - 1)/I_AVERAGE
@@ -1471,8 +1499,9 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
                   WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", I, ",1),", (MED_TAST(I - 1) + MED_TAST(I))/2
                END DO
                WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", (V - 1)/I_AVERAGE + 1, ",0),", V_TIME(V)
-       WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", (V - 1)/I_AVERAGE + 1, ",1),", MED_TAST((V - 1)/I_AVERAGE) + &
-                  (MED_TAST((V - 1)/I_AVERAGE) - MED_TAST((V - 1)/I_AVERAGE - 1))/2
+               WRITE (70, '(A,A,A,I8,A,E12.5)') &
+                  "*set,A", TRIM(OUTFILE), "(", (V - 1)/I_AVERAGE + 1, ",1),", &
+                  MED_TAST((V - 1)/I_AVERAGE) + (MED_TAST((V - 1)/I_AVERAGE) - MED_TAST((V - 1)/I_AVERAGE - 1))/2
             END IF
             IF (VARIABLE_KIND == ' HEAT TRANSFER COEFFICIENT    ') THEN
                WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,H", TRIM(OUTFILE), "(", 1, ",0),", V_TIME(1)
@@ -1482,8 +1511,9 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
                   WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,H", TRIM(OUTFILE), "(", I, ",1),", (MED_TAST(I - 1) + MED_TAST(I))/2
                END DO
                WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,H", TRIM(OUTFILE), "(", (V - 1)/I_AVERAGE + 1, ",0),", V_TIME(V)
-       WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,H", TRIM(OUTFILE), "(", (V - 1)/I_AVERAGE + 1, ",1),", MED_TAST((V - 1)/I_AVERAGE) + &
-                  (MED_TAST((V - 1)/I_AVERAGE) - MED_TAST((V - 1)/I_AVERAGE - 1))/2
+               WRITE (70, '(A,A,A,I8,A,E12.5)') &
+                  "*set,H", TRIM(OUTFILE), "(", (V - 1)/I_AVERAGE + 1, ",1),", &
+                  MED_TAST((V - 1)/I_AVERAGE) + (MED_TAST((V - 1)/I_AVERAGE) - MED_TAST((V - 1)/I_AVERAGE - 1))/2
             END IF
             IF (VARIABLE_KIND == ' NET HEAT FLUX                ') THEN
                WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", 1, ",0),", V_TIME(1)
@@ -1493,8 +1523,9 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
                   WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", I, ",1),", ((MED_TAST(I - 1) + MED_TAST(I))/2)*1000
                END DO
                WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", (V - 1)/I_AVERAGE + 1, ",0),", V_TIME(V)
-      WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", (V - 1)/I_AVERAGE + 1, ",1),", (MED_TAST((V - 1)/I_AVERAGE) + &
-                                                             (MED_TAST((V - 1)/I_AVERAGE) - MED_TAST((V - 1)/I_AVERAGE - 1))/2)*1000
+               WRITE (70, '(A,A,A,I8,A,E12.5)') &
+                  "*set,A", TRIM(OUTFILE), "(", (V - 1)/I_AVERAGE + 1, ",1),", &
+                  (MED_TAST((V - 1)/I_AVERAGE) + (MED_TAST((V - 1)/I_AVERAGE) - MED_TAST((V - 1)/I_AVERAGE - 1))/2)*1000
             END IF
          END IF
 !**********************
@@ -1507,6 +1538,7 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
                MED = MED + TAST(V - I)
             END DO
             MED = MED/(N_AVERAGE)
+            ! Q: Why 18000.0?
             IF (VARIABLE_KIND == ' ADIABATIC SURFACE TEMPERATURE') THEN
                WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", V, ",0),", V_TIME(V) + TINT
                WRITE (70, '(A,A,A,I8,A,E12.5)') "*set,A", TRIM(OUTFILE), "(", V, ",1),", MED
@@ -1552,29 +1584,34 @@ SUBROUTINE FDS2AST(CHID, NOMASTER, C_S, TBEG, TEND, TINT, COUNTER, VARIABLE, N, 
          END IF
 !**********************
          IF (VARIABLE_KIND == ' ADIABATIC SURFACE TEMPERATURE') THEN
-            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') 'Interface point    ', Xa, '        ', Ya, &
-               '        ', Za
-            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') 'Cell dimension     ', (XF - XS), '        ', (YF - YS), &
-               '        ', (ZF - ZS)
-            WRITE (6, '(A, F8.3, F8.3, F8.3, F8.3, F8.3, F8.3)') 'AST Results    ', M_AST(5, 3), M_AST(5, 5), M_AST(5, 2), &
-               M_AST(5, 6), M_AST(5, 1), M_AST(5, 7)
-            IF (VARIABLE == 1) WRITE (6, '(A, F8.5, A, F8.5, A, F8.5)') 'Normal_Vector       ', NX, '        ', NY, '        ', NZ
+            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') &
+               'Interface point    ', Xa, '        ', Ya, '        ', Za
+            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') &
+               'Cell dimension     ', (XF - XS), '        ', (YF - YS), '        ', (ZF - ZS)
+            WRITE (6, '(A, F8.3, F8.3, F8.3, F8.3, F8.3, F8.3)') &
+               'AST Results    ', M_AST(5, 3), M_AST(5, 5), M_AST(5, 2), M_AST(5, 6), M_AST(5, 1), M_AST(5, 7)
+            IF (VARIABLE == 1) &
+               WRITE (6, '(A, F8.5, A, F8.5, A, F8.5)') &
+               'Normal_Vector       ', NX, '        ', NY, '        ', NZ
          END IF
          IF (VARIABLE_KIND == ' HEAT TRANSFER COEFFICIENT    ') THEN
-            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') 'Cell dimension     ', (XF - XS), '        ', (YF - YS), &
-               '        ', (ZF - ZS)
-            WRITE (6, '(A, F8.3, F8.3, F8.3, F8.3, F8.3, F8.3)') ' h  Results    ', M_AST(5, 3), M_AST(5, 5), M_AST(5, 2), &
-               M_AST(5, 6), M_AST(5, 1), M_AST(5, 7)
-            IF (VARIABLE == 2) WRITE (6, '(A, F8.5, A, F8.5, A, F8.5)') 'Normal_Vector       ', NX, '        ', NY, '        ', NZ
+            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') &
+               'Cell dimension     ', (XF - XS), '        ', (YF - YS), '        ', (ZF - ZS)
+            WRITE (6, '(A, F8.3, F8.3, F8.3, F8.3, F8.3, F8.3)') &
+               ' h  Results    ', M_AST(5, 3), M_AST(5, 5), M_AST(5, 2), M_AST(5, 6), M_AST(5, 1), M_AST(5, 7)
+            IF (VARIABLE == 2) &
+               WRITE (6, '(A, F8.5, A, F8.5, A, F8.5)') &
+               'Normal_Vector       ', NX, '        ', NY, '        ', NZ
          END IF
          IF (VARIABLE_KIND == ' NET HEAT FLUX                ') THEN
-            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') 'Interface point    ', Xa, '        ', Ya, &
-               '        ', Za
-            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') 'Cell dimension     ', (XF - XS), '        ', (YF - YS), &
-               '        ', (ZF - ZS)
-            WRITE (6, '(A, F8.3, F8.3, F8.3, F8.3, F8.3, F8.3)') 'qnet Results   ', M_AST(5, 3), M_AST(5, 5), M_AST(5, 2), &
-               M_AST(5, 6), M_AST(5, 1), M_AST(5, 7)
-            WRITE (6, '(A, F8.5, A, F8.5, A, F8.5)') 'Normal_Vector       ', NX, '        ', NY, '        ', NZ
+            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') &
+               'Interface point    ', Xa, '        ', Ya, '        ', Za
+            WRITE (6, '(A, F8.3, A, F8.3, A, F8.3)') &
+               'Cell dimension     ', (XF - XS), '        ', (YF - YS), '        ', (ZF - ZS)
+            WRITE (6, '(A, F8.3, F8.3, F8.3, F8.3, F8.3, F8.3)') &
+               'qnet Results   ', M_AST(5, 3), M_AST(5, 5), M_AST(5, 2), M_AST(5, 6), M_AST(5, 1), M_AST(5, 7)
+            WRITE (6, '(A, F8.5, A, F8.5, A, F8.5)') &
+               'Normal_Vector       ', NX, '        ', NY, '        ', NZ
          END IF
          DEALLOCATE (V_TIME)
          DEALLOCATE (TAST)
